@@ -1,39 +1,20 @@
-# # rag.py
-# ## Version -4 (compatible with main.py version 5) - Added Gemini support
-
+### APi key input 
 import json
 import numpy as np
 import faiss
-import os
 import requests
 from sentence_transformers import SentenceTransformer
-from dotenv import load_dotenv
 import re
-import google.generativeai as genai # Added for Gemini
-
-load_dotenv()
 
 class GovernmentSchemeRAG:
-    def __init__(self, json_path):
+    def __init__(self, json_path, hf_token=""):
         self.json_path = json_path
         self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
         self.index = None
         self.dimension = None
 
-        # Load API Keys
-        self.hf_token = os.getenv("HUGGINGFACE_TOKEN")
-        self.google_api_key = os.getenv("GOOGLE_API_KEY")
-
-        # Configure Gemini
-        if self.google_api_key:
-            try:
-                genai.configure(api_key=self.google_api_key)
-            except Exception as e:
-                print(f"Error configuring Gemini API: {e}") # Non-blocking error
-                self.google_api_key = None # Disable Gemini if config fails
-        else:
-             print("Warning: GOOGLE_API_KEY not found in .env file. Gemini model will be unavailable.")
-
+        # API Key provided via parameter (from Streamlit input)
+        self.hf_token = hf_token
 
         self.chunks, self.metadata = self.chunk_documents()
         if not self.chunks:
@@ -45,18 +26,17 @@ class GovernmentSchemeRAG:
         chunks = []
         metadata = []
         try:
-            with open(self.json_path, 'r', encoding='utf-8') as f: # Specify encoding
+            with open(self.json_path, 'r', encoding='utf-8') as f:  # Specify encoding
                 self.schemes_data = json.load(f)
         except FileNotFoundError:
-            st.error(f"Error: JSON file not found at {self.json_path}")
+            print(f"Error: JSON file not found at {self.json_path}")
             return [], []
         except json.JSONDecodeError:
-            st.error(f"Error: Could not decode JSON from {self.json_path}. Check file format.")
+            print(f"Error: Could not decode JSON from {self.json_path}. Check file format.")
             return [], []
         except Exception as e:
-            st.error(f"An unexpected error occurred loading the JSON: {e}")
+            print(f"An unexpected error occurred loading the JSON: {e}")
             return [], []
-
 
         for scheme in self.schemes_data:
             data = scheme.get("data", {})
@@ -73,12 +53,11 @@ class GovernmentSchemeRAG:
             for key in ["details_content", "eligibility_content", "application_process"]:
                 content = data.get(key, [])
                 if isinstance(content, list):
-                     # Clean up potential None values or non-string items if necessary
+                    # Clean up potential None values or non-string items if necessary
                     cleaned_content = [str(item) for item in content if item is not None]
                     text_parts.extend(cleaned_content)
-                elif content is not None: # Handle cases where it might be a single string
+                elif content is not None:  # Handle cases where it might be a single string
                     text_parts.append(str(content))
-
 
             chunk = "\n".join(text_parts).strip()
             if chunk:
@@ -95,31 +74,29 @@ class GovernmentSchemeRAG:
         if not self.chunks:
             print("Skipping index creation as no chunks were loaded.")
             return
-        embeddings = np.array([self.embedding_model.encode(chunk) for chunk in self.chunks]).astype('float32') # Ensure float32
+        embeddings = np.array([self.embedding_model.encode(chunk) for chunk in self.chunks]).astype('float32')  # Ensure float32
 
         if embeddings.ndim == 1:
-             if embeddings.shape[0] > 0: # Check if the single dimension is not empty
+            if embeddings.shape[0] > 0:  # Check if the single dimension is not empty
                 self.dimension = embeddings.shape[0]
                 embeddings = embeddings.reshape(1, -1)
-             else:
-                 print("Warning: Embeddings array is empty or invalid.")
-                 return # Cannot create index with empty embeddings
-        elif embeddings.shape[0] == 0: # Check if the 2D array has no rows
+            else:
+                print("Warning: Embeddings array is empty or invalid.")
+                return  # Cannot create index with empty embeddings
+        elif embeddings.shape[0] == 0:  # Check if the 2D array has no rows
             print("Warning: Embeddings array is empty.")
-            return # Cannot create index with empty embeddings
+            return  # Cannot create index with empty embeddings
         else:
             self.dimension = embeddings.shape[1]
-
 
         self.index = faiss.IndexFlatL2(self.dimension)
         self.index.add(embeddings)
         print(f"FAISS index created successfully with {self.index.ntotal} vectors.")
 
-
     def query(self, question, top_k=3):
         if not self.index or self.index.ntotal == 0:
-             return [] # Return empty if index doesn't exist or is empty
-        question_embedding = self.embedding_model.encode(question).reshape(1, -1).astype('float32') # Ensure float32
+            return []  # Return empty if index doesn't exist or is empty
+        question_embedding = self.embedding_model.encode(question).reshape(1, -1).astype('float32')  # Ensure float32
         distances, indices = self.index.search(question_embedding, top_k)
 
         results = []
@@ -131,11 +108,10 @@ class GovernmentSchemeRAG:
                     "metadata": self.metadata[i]
                 })
             else:
-                 print(f"Warning: Index {i} out of bounds for chunks list (length {len(self.chunks)}).")
+                print(f"Warning: Index {i} out of bounds for chunks list (length {len(self.chunks)}).")
         return results
 
-    # --- Updated generate_answer ---
-    def generate_answer(self, question, context, model_choice='HuggingFace'):
+    def generate_answer(self, question, context):
         prompt = f"""
 Context about government schemes:
 {context}
@@ -155,54 +131,30 @@ If available, mention:
 Highlight important section titles in **bold**.
 If information is missing for a section, simply omit that section. Be clear and direct.
 """
-        answer = f"Could not generate answer using {model_choice}." # Default error message
+        answer = "Could not generate answer using Hugging Face."  # Default error message
 
-        if model_choice == 'Gemini' and self.google_api_key:
-            try:
-                generation_config = {"temperature": 0.1, "max_output_tokens": 500} # Simplified config
-                safety_settings=[ # Basic safety settings
-                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-                ]
-                model = genai.GenerativeModel(model_name="gemini-1.0-pro",
-                                              generation_config=generation_config,
-                                              safety_settings=safety_settings)
-                response = model.generate_content(prompt)
-                answer = response.text
-            except Exception as e:
-                print(f"Error generating answer with Gemini: {e}")
-                answer = f"Error generating answer with Gemini: {e}"
-
-        elif model_choice == 'HuggingFace' and self.hf_token:
+        if self.hf_token:
             api_url = "https://api-inference.huggingface.co/models/google/flan-t5-small"
             headers = {"Authorization": f"Bearer {self.hf_token}", "Content-Type": "application/json"}
             payload = {"inputs": prompt, "options": {"wait_for_model": True, "max_length": 450, "temperature": 0.1}}
             try:
                 response = requests.post(api_url, headers=headers, json=payload)
-                response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+                response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
                 output = response.json()
                 if output and isinstance(output, list) and 'generated_text' in output[0]:
-                     answer = output[0].get("generated_text", "No answer returned by Flan-T5.")
+                    answer = output[0].get("generated_text", "No answer returned by Flan-T5.")
                 else:
-                     answer = f"Unexpected response format from Flan-T5 API: {output}"
-
+                    answer = f"Unexpected response format from Flan-T5 API: {output}"
             except requests.exceptions.RequestException as e:
                 print(f"Error calling Hugging Face API: {e}")
                 answer = f"Error: Could not connect to Hugging Face API - {e}"
             except Exception as e:
                 print(f"Error processing Hugging Face response: {e}")
                 answer = f"Error processing Hugging Face response: {e}"
-
         else:
-             if model_choice == 'Gemini':
-                 answer = "Gemini model unavailable (check GOOGLE_API_KEY in .env)."
-             elif model_choice == 'HuggingFace':
-                 answer = "Hugging Face model unavailable (check HUGGINGFACE_TOKEN in .env)."
+            answer = "Hugging Face model unavailable (check HUGGINGFACE_TOKEN input)."
 
-
-        # Apply post-processing (Common for both models)
+        # Apply post-processing
         answer = answer.replace("Scheme Name:", "**Scheme Name:**")
         answer = answer.replace("Ministry/Department:", "**Ministry/Department:**")
         answer = answer.replace("Purpose:", "**Purpose:**")
@@ -213,14 +165,14 @@ If information is missing for a section, simply omit that section. Be clear and 
         answer = answer.replace("Application Process Overview:", "**Application Process Overview:**")
         answer = answer.replace("Required Documents:", "**Required Documents:**")
         answer = answer.replace("Website Link:", "**Website Link:**")
-        answer = answer.replace("Source:", "**Source:**") # Keep this if your prompt might generate it
+        answer = answer.replace("Source:", "**Source:**")  # Keep this if your prompt might generate it
 
         # Make URLs clickable
         urls = re.findall(r'(https?://[^\s]+)', answer)
         for url in urls:
-             # Basic check to avoid mangling markdown links if already formatted
-             if f"[{url}]({url})" not in answer and f"**Website Link:** {url}" in answer :
-                 answer = answer.replace(url, f"[{url}]({url})")
+            # Basic check to avoid mangling markdown links if already formatted
+            if f"[{url}]({url})" not in answer and f"**Website Link:** {url}" in answer:
+                answer = answer.replace(url, f"[{url}]({url})")
 
         # Format application steps (basic newline formatting)
         if "**Application Process:**" in answer or "**Application Process Overview:**" in answer:
@@ -229,25 +181,275 @@ If information is missing for a section, simply omit that section. Be clear and 
             in_app_process = False
             for line in lines:
                 if line.strip().startswith("**Application Process"):
-                     in_app_process = True
-                     formatted_lines.append(line)
+                    in_app_process = True
+                    formatted_lines.append(line)
                 elif in_app_process and re.match(r'^\s*\d+\.\s+', line.strip()):
-                     formatted_lines.append(line.strip()) # Keep numbered steps
+                    formatted_lines.append(line.strip())  # Keep numbered steps
                 elif in_app_process and line.strip().startswith('- '):
-                     formatted_lines.append(line.strip()) # Keep bullet points
+                    formatted_lines.append(line.strip())  # Keep bullet points
                 elif in_app_process and line.strip() == "":
                     # Stop adding newlines if the section seems to end
                     if len(formatted_lines) > 0 and formatted_lines[-1].strip() != "":
-                        in_app_process = False # Assume end of section on blank line
-                    formatted_lines.append(line) # Keep blank lines within reason
+                        in_app_process = False  # Assume end of section on blank line
+                    formatted_lines.append(line)  # Keep blank lines within reason
                 elif in_app_process:
-                     formatted_lines.append(line) # Keep other lines in the section
+                    formatted_lines.append(line)  # Keep other lines in the section
                 else:
-                     formatted_lines.append(line) # Add lines outside the section
+                    formatted_lines.append(line)  # Add lines outside the section
             answer = "\n".join(formatted_lines)
 
-
         return answer
+
+
+# # # rag.py
+
+# import json
+# import numpy as np
+# import faiss
+# import os
+# import requests
+# from sentence_transformers import SentenceTransformer
+# from dotenv import load_dotenv
+# import re
+# import google.generativeai as genai # Added for Gemini
+
+# load_dotenv()
+
+# class GovernmentSchemeRAG:
+#     def __init__(self, json_path):
+#         self.json_path = json_path
+#         self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+#         self.index = None
+#         self.dimension = None
+
+#         # Load API Keys
+#         self.hf_token = os.getenv("HUGGINGFACE_TOKEN")
+#         self.google_api_key = os.getenv("GOOGLE_API_KEY")
+
+#         # Configure Gemini
+#         if self.google_api_key:
+#             try:
+#                 genai.configure(api_key=self.google_api_key)
+#             except Exception as e:
+#                 print(f"Error configuring Gemini API: {e}") # Non-blocking error
+#                 self.google_api_key = None # Disable Gemini if config fails
+#         else:
+#              print("Warning: GOOGLE_API_KEY not found in .env file. Gemini model will be unavailable.")
+
+
+#         self.chunks, self.metadata = self.chunk_documents()
+#         if not self.chunks:
+#             raise ValueError("No chunks available to create embeddings.")
+
+#         self.create_index()
+
+#     def chunk_documents(self):
+#         chunks = []
+#         metadata = []
+#         try:
+#             with open(self.json_path, 'r', encoding='utf-8') as f: # Specify encoding
+#                 self.schemes_data = json.load(f)
+#         except FileNotFoundError:
+#             st.error(f"Error: JSON file not found at {self.json_path}")
+#             return [], []
+#         except json.JSONDecodeError:
+#             st.error(f"Error: Could not decode JSON from {self.json_path}. Check file format.")
+#             return [], []
+#         except Exception as e:
+#             st.error(f"An unexpected error occurred loading the JSON: {e}")
+#             return [], []
+
+
+#         for scheme in self.schemes_data:
+#             data = scheme.get("data", {})
+
+#             text_parts = []
+#             scheme_name = data.get("scheme_name", "Unknown Scheme")
+#             ministry = data.get("ministry", "Unknown Ministry")
+#             department = data.get("department", "Unknown Department")
+
+#             text_parts.append(f"Scheme: {scheme_name}")
+#             text_parts.append(f"Ministry: {ministry}")
+#             text_parts.append(f"Department: {department}")
+
+#             for key in ["details_content", "eligibility_content", "application_process"]:
+#                 content = data.get(key, [])
+#                 if isinstance(content, list):
+#                      # Clean up potential None values or non-string items if necessary
+#                     cleaned_content = [str(item) for item in content if item is not None]
+#                     text_parts.extend(cleaned_content)
+#                 elif content is not None: # Handle cases where it might be a single string
+#                     text_parts.append(str(content))
+
+
+#             chunk = "\n".join(text_parts).strip()
+#             if chunk:
+#                 chunks.append(chunk)
+#                 metadata.append({
+#                     "scheme_name": scheme_name,
+#                     "ministry": ministry,
+#                     "department": department
+#                 })
+
+#         return chunks, metadata
+
+#     def create_index(self):
+#         if not self.chunks:
+#             print("Skipping index creation as no chunks were loaded.")
+#             return
+#         embeddings = np.array([self.embedding_model.encode(chunk) for chunk in self.chunks]).astype('float32') # Ensure float32
+
+#         if embeddings.ndim == 1:
+#              if embeddings.shape[0] > 0: # Check if the single dimension is not empty
+#                 self.dimension = embeddings.shape[0]
+#                 embeddings = embeddings.reshape(1, -1)
+#              else:
+#                  print("Warning: Embeddings array is empty or invalid.")
+#                  return # Cannot create index with empty embeddings
+#         elif embeddings.shape[0] == 0: # Check if the 2D array has no rows
+#             print("Warning: Embeddings array is empty.")
+#             return # Cannot create index with empty embeddings
+#         else:
+#             self.dimension = embeddings.shape[1]
+
+
+#         self.index = faiss.IndexFlatL2(self.dimension)
+#         self.index.add(embeddings)
+#         print(f"FAISS index created successfully with {self.index.ntotal} vectors.")
+
+
+#     def query(self, question, top_k=3):
+#         if not self.index or self.index.ntotal == 0:
+#              return [] # Return empty if index doesn't exist or is empty
+#         question_embedding = self.embedding_model.encode(question).reshape(1, -1).astype('float32') # Ensure float32
+#         distances, indices = self.index.search(question_embedding, top_k)
+
+#         results = []
+#         for i in indices[0]:
+#             # Check index bounds robustly
+#             if 0 <= i < len(self.chunks):
+#                 results.append({
+#                     "chunk": self.chunks[i],
+#                     "metadata": self.metadata[i]
+#                 })
+#             else:
+#                  print(f"Warning: Index {i} out of bounds for chunks list (length {len(self.chunks)}).")
+#         return results
+
+#     # --- Updated generate_answer ---
+#     def generate_answer(self, question, context, model_choice='HuggingFace'):
+#         prompt = f"""
+# Context about government schemes:
+# {context}
+
+# Question: {question}
+
+# Given the context below about a government scheme, answer the user's question concisely, focusing on the key details requested.
+
+# If available, mention:
+# - Scheme Name
+# - Purpose
+# - Eligibility
+# - Key Benefits
+# - Application Process Overview (briefly)
+# - Website Link (if explicitly found in context)
+
+# Highlight important section titles in **bold**.
+# If information is missing for a section, simply omit that section. Be clear and direct.
+# """
+#         answer = f"Could not generate answer using {model_choice}." # Default error message
+
+#         if model_choice == 'Gemini' and self.google_api_key:
+#             try:
+#                 generation_config = {"temperature": 0.1, "max_output_tokens": 500} # Simplified config
+#                 safety_settings=[ # Basic safety settings
+#                     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+#                     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+#                     {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+#                     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+#                 ]
+#                 model = genai.GenerativeModel(model_name="gemini-1.0-pro",
+#                                               generation_config=generation_config,
+#                                               safety_settings=safety_settings)
+#                 response = model.generate_content(prompt)
+#                 answer = response.text
+#             except Exception as e:
+#                 print(f"Error generating answer with Gemini: {e}")
+#                 answer = f"Error generating answer with Gemini: {e}"
+
+#         elif model_choice == 'HuggingFace' and self.hf_token:
+#             api_url = "https://api-inference.huggingface.co/models/google/flan-t5-small"
+#             headers = {"Authorization": f"Bearer {self.hf_token}", "Content-Type": "application/json"}
+#             payload = {"inputs": prompt, "options": {"wait_for_model": True, "max_length": 450, "temperature": 0.1}}
+#             try:
+#                 response = requests.post(api_url, headers=headers, json=payload)
+#                 response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+#                 output = response.json()
+#                 if output and isinstance(output, list) and 'generated_text' in output[0]:
+#                      answer = output[0].get("generated_text", "No answer returned by Flan-T5.")
+#                 else:
+#                      answer = f"Unexpected response format from Flan-T5 API: {output}"
+
+#             except requests.exceptions.RequestException as e:
+#                 print(f"Error calling Hugging Face API: {e}")
+#                 answer = f"Error: Could not connect to Hugging Face API - {e}"
+#             except Exception as e:
+#                 print(f"Error processing Hugging Face response: {e}")
+#                 answer = f"Error processing Hugging Face response: {e}"
+
+#         else:
+#              if model_choice == 'Gemini':
+#                  answer = "Gemini model unavailable (check GOOGLE_API_KEY in .env)."
+#              elif model_choice == 'HuggingFace':
+#                  answer = "Hugging Face model unavailable (check HUGGINGFACE_TOKEN in .env)."
+
+
+#         # Apply post-processing (Common for both models)
+#         answer = answer.replace("Scheme Name:", "**Scheme Name:**")
+#         answer = answer.replace("Ministry/Department:", "**Ministry/Department:**")
+#         answer = answer.replace("Purpose:", "**Purpose:**")
+#         answer = answer.replace("Benefits:", "**Benefits:**")
+#         answer = answer.replace("Key Benefits:", "**Key Benefits:**")
+#         answer = answer.replace("Eligibility:", "**Eligibility:**")
+#         answer = answer.replace("Application Process:", "**Application Process:**")
+#         answer = answer.replace("Application Process Overview:", "**Application Process Overview:**")
+#         answer = answer.replace("Required Documents:", "**Required Documents:**")
+#         answer = answer.replace("Website Link:", "**Website Link:**")
+#         answer = answer.replace("Source:", "**Source:**") # Keep this if your prompt might generate it
+
+#         # Make URLs clickable
+#         urls = re.findall(r'(https?://[^\s]+)', answer)
+#         for url in urls:
+#              # Basic check to avoid mangling markdown links if already formatted
+#              if f"[{url}]({url})" not in answer and f"**Website Link:** {url}" in answer :
+#                  answer = answer.replace(url, f"[{url}]({url})")
+
+#         # Format application steps (basic newline formatting)
+#         if "**Application Process:**" in answer or "**Application Process Overview:**" in answer:
+#             lines = answer.split('\n')
+#             formatted_lines = []
+#             in_app_process = False
+#             for line in lines:
+#                 if line.strip().startswith("**Application Process"):
+#                      in_app_process = True
+#                      formatted_lines.append(line)
+#                 elif in_app_process and re.match(r'^\s*\d+\.\s+', line.strip()):
+#                      formatted_lines.append(line.strip()) # Keep numbered steps
+#                 elif in_app_process and line.strip().startswith('- '):
+#                      formatted_lines.append(line.strip()) # Keep bullet points
+#                 elif in_app_process and line.strip() == "":
+#                     # Stop adding newlines if the section seems to end
+#                     if len(formatted_lines) > 0 and formatted_lines[-1].strip() != "":
+#                         in_app_process = False # Assume end of section on blank line
+#                     formatted_lines.append(line) # Keep blank lines within reason
+#                 elif in_app_process:
+#                      formatted_lines.append(line) # Keep other lines in the section
+#                 else:
+#                      formatted_lines.append(line) # Add lines outside the section
+#             answer = "\n".join(formatted_lines)
+
+
+#         return answer
 
 # ## Version -3 compatible with version -3 of main.py
 
