@@ -42,10 +42,10 @@ This project is a **Retrieval-Augmented Generation (RAG)** based intelligent QnA
 
 <table align="center">
   <tr>
-    <td align="center"><b>Streamlit Interface (insert screenshot here)</b><br><img src="your_image_link_1" width="80%" /></td>
+    <td align="center"><b>Streamlit Interface (insert screenshot here)</b><br><img src="/Users/amitanand/Desktop/Utkarsh/Streamlit Interface.png" width="80%" /></td>
   </tr>
   <tr>
-    <td align="center"><b>RAG Pipeline Overview</b><br><img src="your_image_link_2" width="80%" /></td>
+    <td align="center"><b>RAG Pipeline Overview</b><br><img src="Pipeline.png" width="80%" /></td>
   </tr>
 </table>
 
