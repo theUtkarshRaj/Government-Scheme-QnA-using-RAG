@@ -55,7 +55,7 @@ This project is a **Retrieval-Augmented Generation (RAG)** based intelligent QnA
 
 ### 📁 Clone the Repository
 ```bash
-git clone https://github.com/Amitanand983/government-scheme-rag-qa.git
+git clone https://github.com/theUtkarshRaj/Government-Scheme-QnA-using-RAG
 cd government-scheme-rag-qa
 ```
 
@@ -122,7 +122,7 @@ After launching, enter your **Hugging Face API key** in the Streamlit sidebar.
 
 ## 📽️ Demo Video
 
-[Click here to watch demo](your_demo_video_link_here)
+[Click here to watch demo](https://drive.google.com/file/d/1R_av1NY1NSAGPCzrlX_lEw7_n7HkPl-m/view?usp=sharing)
 
 ---
 
