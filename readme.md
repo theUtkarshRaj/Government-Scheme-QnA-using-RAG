@@ -33,7 +33,7 @@ This project is a **Retrieval-Augmented Generation (RAG)** based intelligent QnA
 ## ✨ Key Features
 
 - 🔍 **Semantic Search** using FAISS + MiniLM embeddings  
-- 🧠 **LLM-powered Answers** with `mistralai/Mistral-7B-Instruct-v0.1`
+- 🧠 **LLM-powered Answers** with `google/flan-t5-small`
 - 📄 Supports `.json` and `.txt` based knowledge bases
 - 🌐 **Streamlit Interface** for interactive Q&A
 - 🔑 Hugging Face **API Key authentication** for secure model inference
@@ -108,7 +108,7 @@ After launching, enter your **Hugging Face API key** in the Streamlit sidebar.
 | Component        | Model Name                                                 | Description                                 |
 |------------------|------------------------------------------------------------|---------------------------------------------|
 | Embeddings       | [`all-MiniLM-L6-v2`](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) | Lightweight sentence transformer for retrieval |
-| Language Model   | [`Mistral-7B-Instruct`](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.1) | Instruction-tuned open LLM for generation |
+| Language Model   | [`flan-t5-small`](https://api-inference.huggingface.co/models/google/flan-t5-small) | Instruction-tuned open LLM for generation |
 
 ---
 
