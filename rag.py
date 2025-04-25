@@ -1,5 +1,5 @@
-# rag.py
-## Version -4 (compatible with main.py version 5) - Added Gemini support
+# # rag.py
+# ## Version -4 (compatible with main.py version 5) - Added Gemini support
 
 import json
 import numpy as np
