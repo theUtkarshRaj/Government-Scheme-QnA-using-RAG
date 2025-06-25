@@ -5,21 +5,19 @@ import faiss
 import requests
 from sentence_transformers import SentenceTransformer
 import re
+import google.generativeai as genai
 
 class GovernmentSchemeRAG:
-    def __init__(self, json_path, hf_token=""):
+    def __init__(self, json_path, hf_token="", google_api_key=""):
         self.json_path = json_path
         self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
         self.index = None
         self.dimension = None
-
-        # API Key provided via parameter (from Streamlit input)
         self.hf_token = hf_token
-
+        self.google_api_key = google_api_key
         self.chunks, self.metadata = self.chunk_documents()
         if not self.chunks:
             raise ValueError("No chunks available to create embeddings.")
-
         self.create_index()
 
     def chunk_documents(self):
@@ -113,38 +111,68 @@ class GovernmentSchemeRAG:
 
     def generate_answer(self, question, context):
         prompt = f"""
-Context about government schemes:
+You are an expert assistant for Indian government schemes.
+
+Context:
 {context}
 
-Question: {question}
+User Question:
+{question}
 
-Given the context below about a government scheme, answer the user's question concisely, focusing on the key details requested.
+Instructions:
+1. Search the context for a scheme whose name or description exactly matches what the user asked for.
+2. If you find an exact match, provide a detailed answer ONLY about that scheme, including:
+   - **Scheme Name**
+   - **Ministry/Department**
+   - **Purpose**
+   - **Eligibility**
+   - **Benefits/Assistance**
+   - **Application Process** (with steps if available)
+   - **Official Website Link** (if found)
+   - Use clear sections with bold headers (Markdown: **Header:**).
+3. If you do NOT find an exact match:
+   - Clearly state: "No exact match found for your query."
+   - List the names of the most relevant or related schemes (if any), but DO NOT provide their details.
+   - Example: "Related schemes: Scheme A, Scheme B, Scheme C."
+4. Never provide details for unrelated or only partially matching schemes.
+5. Be concise, clear, and use Markdown formatting for readability.
 
-If available, mention:
-- Scheme Name
-- Purpose
-- Eligibility
-- Key Benefits
-- Application Process Overview (briefly)
-- Website Link (if explicitly found in context)
-
-Highlight important section titles in **bold**.
-If information is missing for a section, simply omit that section. Be clear and direct.
+Remember: Only answer about the exact scheme if found. If not, just list related scheme names, no details.
 """
-        answer = "Could not generate answer using Hugging Face."  # Default error message
+        answer = "Could not generate answer using any model."  # Default error message
 
-        if self.hf_token:
-            api_url = "https://api-inference.huggingface.co/models/google/flan-t5-small"
+        # Try Gemini Flash if Google API key is provided
+        if self.google_api_key:
+            try:
+                genai.configure(api_key=self.google_api_key)
+                model = genai.GenerativeModel("gemini-1.5-flash-latest")
+                response = model.generate_content(prompt)
+                answer = response.text
+            except Exception as e:
+                print(f"Error calling Gemini API: {e}")
+                answer = f"Error: Could not connect to Gemini API - {e}"
+        # Otherwise, try Hugging Face API
+        elif self.hf_token:
+            api_url = "https://api-inference.huggingface.co/models/bigscience/bloomz-560m"
             headers = {"Authorization": f"Bearer {self.hf_token}", "Content-Type": "application/json"}
-            payload = {"inputs": prompt, "options": {"wait_for_model": True, "max_length": 450, "temperature": 0.1}}
+            payload = {
+                "inputs": prompt,
+                "options": {
+                    "wait_for_model": True,
+                    "max_length": 1000,
+                    "temperature": 0.3,
+                    "top_p": 0.9,
+                    "do_sample": True
+                }
+            }
             try:
                 response = requests.post(api_url, headers=headers, json=payload)
-                response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+                response.raise_for_status()
                 output = response.json()
                 if output and isinstance(output, list) and 'generated_text' in output[0]:
-                    answer = output[0].get("generated_text", "No answer returned by Flan-T5.")
+                    answer = output[0].get("generated_text", "No answer returned by model.")
                 else:
-                    answer = f"Unexpected response format from Flan-T5 API: {output}"
+                    answer = f"Unexpected response format from API: {output}"
             except requests.exceptions.RequestException as e:
                 print(f"Error calling Hugging Face API: {e}")
                 answer = f"Error: Could not connect to Hugging Face API - {e}"
@@ -152,50 +180,52 @@ If information is missing for a section, simply omit that section. Be clear and 
                 print(f"Error processing Hugging Face response: {e}")
                 answer = f"Error processing Hugging Face response: {e}"
         else:
-            answer = "Hugging Face model unavailable (check HUGGINGFACE_TOKEN input)."
+            answer = "No API key provided for Gemini or Hugging Face."
 
-        # Apply post-processing
-        answer = answer.replace("Scheme Name:", "**Scheme Name:**")
-        answer = answer.replace("Ministry/Department:", "**Ministry/Department:**")
-        answer = answer.replace("Purpose:", "**Purpose:**")
-        answer = answer.replace("Benefits:", "**Benefits:**")
-        answer = answer.replace("Key Benefits:", "**Key Benefits:**")
-        answer = answer.replace("Eligibility:", "**Eligibility:**")
-        answer = answer.replace("Application Process:", "**Application Process:**")
-        answer = answer.replace("Application Process Overview:", "**Application Process Overview:**")
-        answer = answer.replace("Required Documents:", "**Required Documents:**")
-        answer = answer.replace("Website Link:", "**Website Link:**")
-        answer = answer.replace("Source:", "**Source:**")  # Keep this if your prompt might generate it
+        # Post-processing for better formatting
+        headers = [
+            "Scheme Name:", "Ministry/Department:", "Purpose:", "Eligibility:",
+            "Benefits:", "Key Benefits:", "Application Process:", "Application Steps:",
+            "Required Documents:", "Website Link:", "Official Link:", "Source:",
+            "Overview:", "Relevant Schemes:", "Scheme Details:"
+        ]
+        for header in headers:
+            answer = answer.replace(header, f"**{header}**")
+
+        # Format application steps
+        if "**Application Process:**" in answer or "**Application Steps:**" in answer:
+            lines = answer.split('\n')
+            formatted_lines = []
+            in_steps = False
+            step_count = 0
+            for line in lines:
+                if line.strip().startswith("**Application Process:**") or line.strip().startswith("**Application Steps:**"):
+                    in_steps = True
+                    formatted_lines.append(line)
+                elif in_steps:
+                    if re.match(r'^\s*\d+[\.\)]\s+', line.strip()):
+                        step_count += 1
+                        formatted_lines.append(f"\n{step_count}. {line.strip().split('.', 1)[1].strip()}")
+                    elif line.strip().startswith('- '):
+                        formatted_lines.append(f"\n• {line.strip()[2:]}")
+                    elif line.strip().startswith('**'):
+                        in_steps = False
+                        formatted_lines.append(line)
+                    elif line.strip() and not line.strip().startswith('**'):
+                        formatted_lines.append(line)
+                else:
+                    formatted_lines.append(line)
+            answer = '\n'.join(formatted_lines)
 
         # Make URLs clickable
         urls = re.findall(r'(https?://[^\s]+)', answer)
         for url in urls:
-            # Basic check to avoid mangling markdown links if already formatted
-            if f"[{url}]({url})" not in answer and f"**Website Link:** {url}" in answer:
-                answer = answer.replace(url, f"[{url}]({url})")
-
-        # Format application steps (basic newline formatting)
-        if "**Application Process:**" in answer or "**Application Process Overview:**" in answer:
-            lines = answer.split('\n')
-            formatted_lines = []
-            in_app_process = False
-            for line in lines:
-                if line.strip().startswith("**Application Process"):
-                    in_app_process = True
-                    formatted_lines.append(line)
-                elif in_app_process and re.match(r'^\s*\d+\.\s+', line.strip()):
-                    formatted_lines.append(line.strip())  # Keep numbered steps
-                elif in_app_process and line.strip().startswith('- '):
-                    formatted_lines.append(line.strip())  # Keep bullet points
-                elif in_app_process and line.strip() == "":
-                    # Stop adding newlines if the section seems to end
-                    if len(formatted_lines) > 0 and formatted_lines[-1].strip() != "":
-                        in_app_process = False  # Assume end of section on blank line
-                    formatted_lines.append(line)  # Keep blank lines within reason
-                elif in_app_process:
-                    formatted_lines.append(line)  # Keep other lines in the section
+            if f"[{url}]({url})" not in answer:
+                if f"**Website Link:** {url}" in answer:
+                    answer = answer.replace(f"**Website Link:** {url}", f"**Website Link:** [{url}]({url})")
+                elif f"**Official Link:** {url}" in answer:
+                    answer = answer.replace(f"**Official Link:** {url}", f"**Official Link:** [{url}]({url})")
                 else:
-                    formatted_lines.append(line)  # Add lines outside the section
-            answer = "\n".join(formatted_lines)
-
-        return answer
+                    answer = answer.replace(url, f"[{url}]({url})")
+        answer = re.sub(r'\n{3,}', '\n\n', answer)
+        return answer.strip()
