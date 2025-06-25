@@ -1,15 +1,15 @@
+# Remove dark mode toggle and all related code
 import streamlit as st
 from rag import GovernmentSchemeRAG
 
 @st.cache_resource
-def load_rag_system(json_path, hf_token):
-    return GovernmentSchemeRAG(json_path, hf_token)
+def load_rag_system(json_path, hf_token, google_api_key):
+    return GovernmentSchemeRAG(json_path, hf_token, google_api_key)
 
 def main():
-    # Set page configuration
     st.set_page_config(page_title="🗂️ Government Scheme QnA", layout="wide")
     st.title("🗂️ Government Scheme QnA")
-    st.markdown("Ask a question about Indian government schemes. Example: _What schemes are available for women entrepreneurs?_")
+    st.markdown("Ask a question about Indian government schemes. Example: _What schemes are available for women entrepreneurs?_\n")
 
     # Sidebar for upload and configuration
     with st.sidebar:
@@ -18,9 +18,10 @@ def main():
         # API Key Input (Takes precedence, must be entered first)
         st.subheader("🔑 API Key")
         hf_token = st.text_input("Hugging Face Token", type="password", placeholder="Enter Hugging Face API Token")
-        if not hf_token:
-            st.warning("Please enter your Hugging Face API Token to proceed.")
-            st.stop()  # Stop execution until API key is provided
+        google_api_key = st.text_input("Google Gemini API Key", type="password", placeholder="Enter Google Gemini API Key")
+        if not hf_token and not google_api_key:
+            st.warning("Please enter your Hugging Face API Token or Google Gemini API Key to proceed.")
+            st.stop()  # Stop execution until at least one API key is provided
 
         # File uploader
         uploaded_file = st.file_uploader("📁 Upload scheme JSON", type=["json"])
@@ -29,23 +30,7 @@ def main():
         else:
             st.session_state.json_path = "scheme_data.json"
 
-        # Theme toggle
-        if "dark_mode" not in st.session_state:
-            st.session_state.dark_mode = False  # Default to light mode
-
-        if st.button("🌙 Toggle Dark Mode"):
-            st.session_state.dark_mode = not st.session_state.dark_mode
-            js_code = """
-                const root = document.querySelector('html');
-                if (root.classList.contains('dark')) {
-                    root.classList.remove('dark');
-                } else {
-                    root.classList.add('dark');
-                }
-            """
-            st.components.v1.html(f"<script>{js_code}</script>", height=0)
-
-        # History view
+        # History section at the end of the sidebar
         st.markdown("---")
         st.subheader("📜 History")
         if "history" not in st.session_state:
@@ -55,7 +40,7 @@ def main():
                 st.markdown(f"💬 **Answer:** {entry['answer'][:300]}{'...' if len(entry['answer']) > 300 else ''}")
 
     # Load RAG system only after API key is provided
-    rag_system = load_rag_system(st.session_state.json_path, hf_token)
+    rag_system = load_rag_system(st.session_state.json_path, hf_token, google_api_key)
     st.success(f"✅ Loaded {len(rag_system.chunks)} chunks from {len(rag_system.metadata)} schemes.")
 
     # Example input section
@@ -103,7 +88,7 @@ def main():
                 st.success("Thanks for your feedback!")
         with col2:
             if st.button("👎 Not helpful", key="dislike"):
-                st.warning("We’ll use this to improve.")
+                st.warning("We'll use this to improve.")
 
         # Sources
         st.subheader("📄 Sources")
