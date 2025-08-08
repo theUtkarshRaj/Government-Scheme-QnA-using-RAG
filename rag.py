@@ -1,231 +1,175 @@
-### APi key input 
+import os
 import json
-import numpy as np
-import faiss
-import requests
-from sentence_transformers import SentenceTransformer
-import re
-import google.generativeai as genai
+from typing import List, Dict, Any
+from dotenv import load_dotenv
+
+# LangChain core components
+from langchain.docstore.document import Document
+from langchain.prompts import ChatPromptTemplate
+from langchain.schema.output_parser import StrOutputParser
+from langchain.schema.runnable import RunnableParallel, RunnablePassthrough
+
+# Embeddings and Vector Store
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint, ChatHuggingFace
+
+# Google Generative AI
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+# Load .env
+load_dotenv()
+
 
 class GovernmentSchemeRAG:
-    def __init__(self, json_path, hf_token="", google_api_key=""):
+    def __init__(self, json_path: str, google_api_key: str, hf_token: str):
+        if not google_api_key and not hf_token:
+            raise ValueError("You must provide either a Google API key or a Hugging Face token.")
+
         self.json_path = json_path
-        self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-        self.index = None
-        self.dimension = None
-        self.hf_token = hf_token
         self.google_api_key = google_api_key
-        self.chunks, self.metadata = self.chunk_documents()
-        if not self.chunks:
-            raise ValueError("No chunks available to create embeddings.")
-        self.create_index()
+        self.hf_token = hf_token
 
-    def chunk_documents(self):
-        chunks = []
-        metadata = []
+        # Embeddings
+        self.embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+        # LLM
+        self.llm = self._initialize_llm()
+
+        # Load docs
+        print(f"Loading documents from: {self.json_path}")
+        documents = self._load_documents()
+        if not documents:
+            raise ValueError(f"No documents were loaded from {self.json_path}.")
+
+        # Vector store
+        vector_store = FAISS.from_documents(documents, self.embedding_model)
+        self.retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+        print(f"Vector store created with {len(documents)} documents.")
+
+        # Prompt
+        self.prompt = self._create_prompt_template()
+
+        # Chain
+        self.rag_chain_with_sources = self._build_rag_chain()
+
+    def _initialize_llm(self):
+        """Initialize the LLM for Hugging Face or Google."""
+        if self.google_api_key:
+            print("Initializing model: Gemini 1.5 Flash")
+            os.environ["GOOGLE_API_KEY"] = self.google_api_key
+            return ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3)
+
+        if self.hf_token:
+            print("Initializing model: mistralai/Mistral-7B-Instruct-v0.2")
+            endpoint_llm = HuggingFaceEndpoint(
+                repo_id="mistralai/Mistral-7B-Instruct-v0.2",
+                temperature=0.3,
+                max_new_tokens=256,
+                top_p=0.9,
+                huggingfacehub_api_token=self.hf_token
+            )
+            return ChatHuggingFace(llm=endpoint_llm) 
+
+        return None
+
+    def _load_documents(self) -> List[Document]:
+        """Load JSON file into LangChain Document objects."""
         try:
-            with open(self.json_path, 'r', encoding='utf-8') as f:  # Specify encoding
-                self.schemes_data = json.load(f)
-        except FileNotFoundError:
-            print(f"Error: JSON file not found at {self.json_path}")
-            return [], []
-        except json.JSONDecodeError:
-            print(f"Error: Could not decode JSON from {self.json_path}. Check file format.")
-            return [], []
-        except Exception as e:
-            print(f"An unexpected error occurred loading the JSON: {e}")
-            return [], []
+            with open(self.json_path, "r", encoding="utf-8") as f:
+                schemes_data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Error reading or parsing JSON file: {e}")
+            return []
 
-        for scheme in self.schemes_data:
+        documents = []
+        for scheme in schemes_data:
             data = scheme.get("data", {})
-
-            text_parts = []
             scheme_name = data.get("scheme_name", "Unknown Scheme")
-            ministry = data.get("ministry", "Unknown Ministry")
-            department = data.get("department", "Unknown Department")
 
-            text_parts.append(f"Scheme: {scheme_name}")
-            text_parts.append(f"Ministry: {ministry}")
-            text_parts.append(f"Department: {department}")
-
+            content_parts = [
+                f"Scheme: {scheme_name}",
+                f"Ministry: {data.get('ministry', 'N/A')}",
+                f"Department: {data.get('department', 'N/A')}",
+            ]
             for key in ["details_content", "eligibility_content", "application_process"]:
                 content = data.get(key, [])
                 if isinstance(content, list):
-                    # Clean up potential None values or non-string items if necessary
-                    cleaned_content = [str(item) for item in content if item is not None]
-                    text_parts.extend(cleaned_content)
-                elif content is not None:  # Handle cases where it might be a single string
-                    text_parts.append(str(content))
+                    content_parts.extend([str(item) for item in content if item])
+                elif content:
+                    content_parts.append(str(content))
 
-            chunk = "\n".join(text_parts).strip()
-            if chunk:
-                chunks.append(chunk)
-                metadata.append({
+            page_content = "\n".join(content_parts).strip()
+
+            doc = Document(
+                page_content=page_content,
+                metadata={
                     "scheme_name": scheme_name,
-                    "ministry": ministry,
-                    "department": department
-                })
+                    "ministry": data.get("ministry", "N/A"),
+                    "department": data.get("department", "N/A"),
+                    "source": os.path.basename(self.json_path)
+                }
+            )
+            documents.append(doc)
 
-        return chunks, metadata
+        return documents
 
-    def create_index(self):
-        if not self.chunks:
-            print("Skipping index creation as no chunks were loaded.")
-            return
-        embeddings = np.array([self.embedding_model.encode(chunk) for chunk in self.chunks]).astype('float32')  # Ensure float32
+    @staticmethod
+    def _create_prompt_template() -> ChatPromptTemplate:
+        """Prompt template with history."""
+        template = """
+You are a friendly and helpful chatbot. Based on the context and chat history below,
+provide a concise and direct answer to the user's question in 2-3 sentences.
 
-        if embeddings.ndim == 1:
-            if embeddings.shape[0] > 0:  # Check if the single dimension is not empty
-                self.dimension = embeddings.shape[0]
-                embeddings = embeddings.reshape(1, -1)
-            else:
-                print("Warning: Embeddings array is empty or invalid.")
-                return  # Cannot create index with empty embeddings
-        elif embeddings.shape[0] == 0:  # Check if the 2D array has no rows
-            print("Warning: Embeddings array is empty.")
-            return  # Cannot create index with empty embeddings
-        else:
-            self.dimension = embeddings.shape[1]
+Chat History:
+{history}
 
-        self.index = faiss.IndexFlatL2(self.dimension)
-        self.index.add(embeddings)
-        print(f"FAISS index created successfully with {self.index.ntotal} vectors.")
-
-    def query(self, question, top_k=3):
-        if not self.index or self.index.ntotal == 0:
-            return []  # Return empty if index doesn't exist or is empty
-        question_embedding = self.embedding_model.encode(question).reshape(1, -1).astype('float32')  # Ensure float32
-        distances, indices = self.index.search(question_embedding, top_k)
-
-        results = []
-        for i in indices[0]:
-            # Check index bounds robustly
-            if 0 <= i < len(self.chunks):
-                results.append({
-                    "chunk": self.chunks[i],
-                    "metadata": self.metadata[i]
-                })
-            else:
-                print(f"Warning: Index {i} out of bounds for chunks list (length {len(self.chunks)}).")
-        return results
-
-    def generate_answer(self, question, context):
-        prompt = f"""
-You are an expert assistant for Indian government schemes.
-
-Context:
+Context from Documents:
 {context}
 
 User Question:
 {question}
 
-Instructions:
-1. Search the context for a scheme whose name or description exactly matches what the user asked for.
-2. If you find an exact match, provide a detailed answer ONLY about that scheme, including:
-   - **Scheme Name**
-   - **Ministry/Department**
-   - **Purpose**
-   - **Eligibility**
-   - **Benefits/Assistance**
-   - **Application Process** (with steps if available)
-   - **Official Website Link** (if found)
-   - Use clear sections with bold headers (Markdown: **Header:**).
-3. If you do NOT find an exact match:
-   - Clearly state: "No exact match found for your query."
-   - List the names of the most relevant or related schemes (if any), but DO NOT provide their details.
-   - Example: "Related schemes: Scheme A, Scheme B, Scheme C."
-4. Never provide details for unrelated or only partially matching schemes.
-5. Be concise, clear, and use Markdown formatting for readability.
-
-Remember: Only answer about the exact scheme if found. If not, just list related scheme names, no details.
+Concise Answer:
 """
-        answer = "Could not generate answer using any model."  # Default error message
+        return ChatPromptTemplate.from_template(template)
 
-        # Try Gemini Flash if Google API key is provided
-        if self.google_api_key:
-            try:
-                genai.configure(api_key=self.google_api_key)
-                model = genai.GenerativeModel("gemini-1.5-flash-latest")
-                response = model.generate_content(prompt)
-                answer = response.text
-            except Exception as e:
-                print(f"Error calling Gemini API: {e}")
-                answer = f"Error: Could not connect to Gemini API - {e}"
-        # Otherwise, try Hugging Face API
-        elif self.hf_token:
-            api_url = "https://api-inference.huggingface.co/models/bigscience/bloomz-560m"
-            headers = {"Authorization": f"Bearer {self.hf_token}", "Content-Type": "application/json"}
-            payload = {
-                "inputs": prompt,
-                "options": {
-                    "wait_for_model": True,
-                    "max_length": 1000,
-                    "temperature": 0.3,
-                    "top_p": 0.9,
-                    "do_sample": True
-                }
-            }
-            try:
-                response = requests.post(api_url, headers=headers, json=payload)
-                response.raise_for_status()
-                output = response.json()
-                if output and isinstance(output, list) and 'generated_text' in output[0]:
-                    answer = output[0].get("generated_text", "No answer returned by model.")
-                else:
-                    answer = f"Unexpected response format from API: {output}"
-            except requests.exceptions.RequestException as e:
-                print(f"Error calling Hugging Face API: {e}")
-                answer = f"Error: Could not connect to Hugging Face API - {e}"
-            except Exception as e:
-                print(f"Error processing Hugging Face response: {e}")
-                answer = f"Error processing Hugging Face response: {e}"
-        else:
-            answer = "No API key provided for Gemini or Hugging Face."
+    @staticmethod
+    def _format_docs(docs: List[Document]) -> str:
+        """Format retrieved docs into a single string."""
+        return "\n\n---\n\n".join([d.page_content for d in docs])
 
-        # Post-processing for better formatting
-        headers = [
-            "Scheme Name:", "Ministry/Department:", "Purpose:", "Eligibility:",
-            "Benefits:", "Key Benefits:", "Application Process:", "Application Steps:",
-            "Required Documents:", "Website Link:", "Official Link:", "Source:",
-            "Overview:", "Relevant Schemes:", "Scheme Details:"
-        ]
-        for header in headers:
-            answer = answer.replace(header, f"**{header}**")
+    def _build_rag_chain(self):
+        """Build RAG chain with history support."""
+        context_retriever_chain = (
+            (lambda x: x["question"])
+            | self.retriever
+            | self._format_docs
+        )
 
-        # Format application steps
-        if "**Application Process:**" in answer or "**Application Steps:**" in answer:
-            lines = answer.split('\n')
-            formatted_lines = []
-            in_steps = False
-            step_count = 0
-            for line in lines:
-                if line.strip().startswith("**Application Process:**") or line.strip().startswith("**Application Steps:**"):
-                    in_steps = True
-                    formatted_lines.append(line)
-                elif in_steps:
-                    if re.match(r'^\s*\d+[\.\)]\s+', line.strip()):
-                        step_count += 1
-                        formatted_lines.append(f"\n{step_count}. {line.strip().split('.', 1)[1].strip()}")
-                    elif line.strip().startswith('- '):
-                        formatted_lines.append(f"\n• {line.strip()[2:]}")
-                    elif line.strip().startswith('**'):
-                        in_steps = False
-                        formatted_lines.append(line)
-                    elif line.strip() and not line.strip().startswith('**'):
-                        formatted_lines.append(line)
-                else:
-                    formatted_lines.append(line)
-            answer = '\n'.join(formatted_lines)
+        rag_chain = (
+            RunnablePassthrough.assign(context=context_retriever_chain)
+            | self.prompt
+            | self.llm
+            | StrOutputParser()
+        )
 
-        # Make URLs clickable
-        urls = re.findall(r'(https?://[^\s]+)', answer)
-        for url in urls:
-            if f"[{url}]({url})" not in answer:
-                if f"**Website Link:** {url}" in answer:
-                    answer = answer.replace(f"**Website Link:** {url}", f"**Website Link:** [{url}]({url})")
-                elif f"**Official Link:** {url}" in answer:
-                    answer = answer.replace(f"**Official Link:** {url}", f"**Official Link:** [{url}]({url})")
-                else:
-                    answer = answer.replace(url, f"[{url}]({url})")
-        answer = re.sub(r'\n{3,}', '\n\n', answer)
+        chain_with_sources = RunnableParallel(
+            answer=rag_chain,
+            sources=(lambda x: x["question"]) | self.retriever,
+        )
+        return chain_with_sources
+
+    @staticmethod
+    def _post_process_answer(answer: str) -> str:
         return answer.strip()
+
+    def query(self, question: str, history: str = "") -> Dict[str, Any]:
+        """Query the RAG system."""
+        print(f"Invoking RAG chain for question: '{question}'")
+        if not self.rag_chain_with_sources:
+            return {"answer": "Error: RAG chain is not initialized.", "sources": []}
+
+        input_data = {"question": question, "history": history}
+        result = self.rag_chain_with_sources.invoke(input_data)
+        result["answer"] = self._post_process_answer(result["answer"])
+        return result
