@@ -2,7 +2,6 @@ import streamlit as st
 import rag
 from langchain.schema.messages import HumanMessage, AIMessage
 import sys
-import sqlite3
 
 # --- Caching the heavy, key-independent parts of the RAG chain ---
 @st.cache_resource

@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import FAISS
+from langchain_community.vectorstores import Chroma
 from langchain.chains import create_retrieval_chain, create_history_aware_retriever
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -105,7 +105,7 @@ def load_and_build_vectorstore(limit: int = 100):
     chunked_docs = split_documents(docs)
     
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2", model_kwargs={"device": "cpu"})
-    vectorstore = FAISS.from_documents(documents=chunked_docs, embedding=embeddings)
+    vectorstore = Chroma.from_documents(documents=chunked_docs, embedding=embeddings)
     print("Vector store built successfully.")
     return vectorstore
 
