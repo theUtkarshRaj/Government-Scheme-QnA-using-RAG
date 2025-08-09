@@ -7,3 +7,4 @@ google-generativeai
 sentence-transformers
 chromadb
 pydantic
+faiss-cpu
