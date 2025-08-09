@@ -11,7 +11,7 @@ This project is a sophisticated, yet easy-to-use chatbot built with Streamlit an
       * **On-Demand Loading**: Users explicitly trigger the data loading process with a button, ensuring control over when heavy processing occurs.
       * **Adjustable Document Limit**: A sidebar slider allows users to control how many scheme documents are loaded, balancing knowledge depth with performance.
   * **Conversational Memory**: The chatbot considers the recent chat history to provide more relevant answers to follow-up questions.
-  * **Efficient Search**: Uses **ChromaDB** for fast and effective local similarity searches on scheme documents.
+  * **Efficient Search**: Uses **FAISS** for fast and effective local similarity searches on scheme documents.
   * **Modular Codebase**: The core RAG logic (`rag.py`) is decoupled from the Streamlit frontend (`main_streamlit.py`) for better maintainability.
 
 -----
@@ -21,8 +21,8 @@ This project is a sophisticated, yet easy-to-use chatbot built with Streamlit an
 The chatbot operates on a RAG pipeline, which is an intelligent way to make Large Language Models (LLMs) answer questions based on a specific set of documents.
 
 1.  **Load & Chunk**: When triggered by the user, scheme data from the `scheme_data.json` file is loaded. Each scheme is formatted into a `Document` object and split into manageable chunks.
-2.  **Embed & Store**: Each document chunk is converted into a numerical representation (embedding) using the `all-MiniLM-L6-v2` model. These embeddings are then stored in a **ChromaDB** vector store, which acts as a searchable local knowledge index.
-3.  **Retrieve**: When you ask a question, your query is also converted into an embedding. The system then searches the ChromaDB index to find the document chunks with the most similar embeddings (i.e., the most relevant schemes).
+2.  **Embed & Store**: Each document chunk is converted into a numerical representation (embedding) using the `all-MiniLM-L6-v2` model. These embeddings are then stored in a **FAISS** vector store, which acts as a searchable local knowledge index.
+3.  **Retrieve**: When you ask a question, your query is also converted into an embedding. The system then searches the FAISS index to find the document chunks with the most similar embeddings (i.e., the most relevant schemes).
 4.  **Augment & Generate**: The relevant documents (context), your question, and the recent chat history are combined into a single, detailed prompt. This "augmented" prompt is then sent to the Gemini LLM, which generates a final, context-aware answer.
 
 -----
@@ -41,9 +41,9 @@ Follow these steps to set up and run the project locally.
 ```bash
 git clone https://github.com/theUtkarshRaj/Government-Scheme-QnA-using-RAG
 cd Government-Scheme-QnA-using-RAG
-```
+````
 
-### 2\. Set Up a Virtual Environment
+### 2. Set Up a Virtual Environment
 
 It's highly recommended to use a virtual environment to manage project dependencies.
 
@@ -58,7 +58,7 @@ venv\Scripts\activate
 source venv/bin/activate
 ```
 
-### 3\. Install Dependencies
+### 3. Install Dependencies
 
 Install all the required Python packages from the `requirements.txt` file.
 
@@ -66,7 +66,19 @@ Install all the required Python packages from the `requirements.txt` file.
 pip install -r requirements.txt
 ```
 
-### 4\. Prepare Your Data File
+Make sure your `requirements.txt` includes:
+
+```
+faiss-cpu
+streamlit
+langchain
+sentence-transformers
+google-generativeai
+```
+
+(Adjust packages as per your implementation.)
+
+### 4. Prepare Your Data File
 
 The chatbot requires a `scheme_data.json` file in the root directory. You can use your own data, but it must follow this structure: a list of objects, where each object contains a single `"data"` key.
 
@@ -114,7 +126,7 @@ The chatbot requires a `scheme_data.json` file in the root directory. You can us
 ]
 ```
 
-### 5\. Run the Application
+### 5. Run the Application
 
 Launch the Streamlit app with the following command:
 
@@ -124,25 +136,25 @@ streamlit run main_streamlit.py
 
 Your web browser should automatically open to the application's URL (usually `http://localhost:8501`).
 
------
+---
 
 ## 💬 Usage
 
-1.  **Enter API Key**: On the sidebar, enter your Google Gemini API Key. The chatbot will not start until it's provided.
-2.  **Configure Options**: Use the "Documents to Load" slider to set how many schemes you want the bot to know about.
-3.  **Load Knowledge Base**: Click the **"Load Knowledge Base"** button. This will start the data processing and embedding. The chat will not be active until this step is complete.
-4.  **Ask Questions**: Once the knowledge base is loaded and the API key is accepted, you can type your question into the chat input at the bottom of the page and press Enter.
-5.  **Clear History**: Use the "Clear Chat History" button in the sidebar at any time to reset the conversation.
+1. **Enter API Key**: On the sidebar, enter your Google Gemini API Key. The chatbot will not start until it's provided.
+2. **Configure Options**: Use the "Documents to Load" slider to set how many schemes you want the bot to know about.
+3. **Load Knowledge Base**: Click the **"Load Knowledge Base"** button. This will start the data processing and embedding. The chat will not be active until this step is complete.
+4. **Ask Questions**: Once the knowledge base is loaded and the API key is accepted, you can type your question into the chat input at the bottom of the page and press Enter.
+5. **Clear History**: Use the "Clear Chat History" button in the sidebar at any time to reset the conversation.
 
------
+---
 
 ## 📂 Project Structure
 
 ```
 .
-├── main.py             # The Streamlit frontend application
-├── rag.py                # Core RAG logic and LangChain implementation
-├── requirements.txt      # List of Python dependencies
-├── scheme_data.json      # Default data file for government schemes
-└── README.md             # This file
+├── main_streamlit.py      # The Streamlit frontend application
+├── rag.py                 # Core RAG logic and LangChain implementation
+├── requirements.txt       # List of Python dependencies
+├── scheme_data.json       # Default data file for government schemes
+└── README.md              # This file
 ```
