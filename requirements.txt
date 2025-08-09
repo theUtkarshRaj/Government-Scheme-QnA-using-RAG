@@ -7,4 +7,3 @@ google-generativeai
 sentence-transformers
 chromadb
 pydantic
-pysqlite3
