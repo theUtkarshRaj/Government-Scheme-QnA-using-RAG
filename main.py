@@ -1,15 +1,13 @@
 import streamlit as st
-import rag
+import rag1
 from langchain.schema.messages import HumanMessage, AIMessage
 import sys
-import pysqlite3
-sys.modules['sqlite3'] = pysqlite3
 
 # --- Caching the heavy, key-independent parts of the RAG chain ---
 @st.cache_resource
 def load_vectorstore(limit: int): 
     """Load and cache the vector store which is slow and doesn't need an API key."""
-    return rag.load_and_build_vectorstore(limit=limit) 
+    return rag1.load_and_build_vectorstore(limit=limit) 
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(
@@ -75,7 +73,7 @@ else:
         if vectorstore is None:
              st.error("🚨 Apologies, the knowledge base failed to load. Please ensure 'scheme_data.json' is present.")
         else:
-            rag_chain = rag.get_rag_chain(vectorstore, gemini_api_key)
+            rag_chain = rag1.get_rag_chain(vectorstore, gemini_api_key)
             
             # Initialize chat history
             if "messages" not in st.session_state:
