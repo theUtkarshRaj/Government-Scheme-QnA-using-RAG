@@ -1,80 +1,116 @@
 import streamlit as st
-import os
-import tempfile
-from rag import GovernmentSchemeRAG
+import rag
+from langchain.schema.messages import HumanMessage, AIMessage
 
-# --- Page and Session Initialization ---
+# --- Caching the heavy, key-independent parts of the RAG chain ---
+@st.cache_resource
+def load_vectorstore(limit: int): 
+    """Load and cache the vector store which is slow and doesn't need an API key."""
+    return rag.load_and_build_vectorstore(limit=limit) 
+
+# --- Streamlit Page Configuration ---
 st.set_page_config(
-    page_title="Scheme Chatbot",
-    page_icon="🤖",
-    layout="centered",
-    initial_sidebar_state="expanded"
+    page_title="Indian Government Scheme Chatbot",
+    page_icon="🇮🇳",
+    layout="centered"
 )
 
-# Initialize session state for chat history.
-if "messages" not in st.session_state:
+# --- Sidebar ---
+st.sidebar.header("🔑 API Configuration")
+gemini_api_key = st.sidebar.text_input(
+    "Enter your Gemini API Key:", 
+    type="password",
+    help="You can get your free API key from [Google AI Studio](https://aistudio.google.com/app/apikey)."
+).strip()
+
+st.sidebar.header("⚙️ Options")
+
+doc_limit = st.sidebar.slider(
+    label="Documents to Load",
+    min_value=10,
+    max_value=1000, 
+    value=100,      
+    step=10,
+    help="Set the number of documents to load into the knowledge base."
+)
+
+# --- ✨ NEW: Load Button to control data loading ---
+if st.sidebar.button("Load Knowledge Base", type="primary"):
+    with st.spinner("Loading documents into the vector store... Please wait."):
+        # Store the loaded vector store and the state in the session
+        st.session_state.vectorstore = load_vectorstore(limit=doc_limit)
+        st.session_state.vectorstore_loaded = True
+        st.sidebar.success("Knowledge base loaded successfully!")
+
+if st.sidebar.button("Clear Chat History"):
     st.session_state.messages = []
-if "json_path" not in st.session_state:
-    st.session_state.json_path = "scheme_data.json"
+    # Optionally, you could also clear the vectorstore state here if desired
+    # st.session_state.vectorstore_loaded = False 
+    st.rerun()
 
-# --- Caching the RAG System ---
-@st.cache_resource
-def load_rag_system(json_path, google_api_key, hf_token):
-    """Loads and caches the RAG system to avoid reloading on each interaction."""
-    try:
-        return GovernmentSchemeRAG(json_path=json_path, google_api_key=google_api_key, hf_token=hf_token)
-    except Exception as e:
-        st.error(f"Failed to load RAG system: {e}")
-        return None
+# --- Main Page Content ---
+st.title("🇮🇳 Indian Government Scheme Chatbot")
+st.markdown("""
+Ask me about government schemes! I can provide details on **eligibility**, **benefits**, and more.
+""")
 
-# --- Sidebar Configuration ---
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    st.subheader("🔑 API Keys")
-    google_api_key = st.text_input("Google Gemini API Key", type="password", placeholder="Enter Google API Key")
-    hf_token = st.text_input("Hugging Face Token", type="password", placeholder="Enter Hugging Face Token")
-    
-    st.markdown("---")
+# --- Main App Logic: Now conditional on loading state ---
 
-# --- Main Chat Interface ---
-st.title("🤖 Government Scheme Chatbot")
-st.markdown("Ask me anything about Indian government schemes from the provided data.")
+# Check if the vector store has been loaded.
+if not st.session_state.get("vectorstore_loaded", False):
+    st.info("Please configure your settings in the sidebar and click 'Load Knowledge Base' to start.")
 
-if not google_api_key and not hf_token:
-    st.warning("Please enter your Google Gemini or Hugging Face API Key in the sidebar to start.")
-    st.stop()
+# Check for API Key after loading.
+elif not gemini_api_key:
+    st.warning("Knowledge base is loaded. Please enter your Gemini API key to start chatting.")
 
-rag_system = load_rag_system(st.session_state.json_path, google_api_key, hf_token)
-
-if rag_system:
-    # Display chat messages from history
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # Accept user input
-    if prompt := st.chat_input("Ask about a scheme..."):
-        # Add user message to history and display it
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        # --- HISTORY UPDATE ---
-        # Format the chat history into a string to pass to the RAG system.
-        # We'll take the last 4 messages (2 turns) to keep the context relevant and concise.
-        history_str = "\n".join(
-            [f"{msg['role']}: {msg['content']}" for msg in st.session_state.messages[-5:-1]]
-        )
-        
-        # Display assistant response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                # Pass the history string to the query method
-                response = rag_system.query(prompt, history=history_str)
-                answer = response.get("answer", "Sorry, something went wrong.")
-                st.markdown(answer)
-        
-        # Add assistant response to chat history
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+# Proceed with the chat interface if everything is ready.
 else:
-    st.error("The chatbot could not be initialized. Please check your configuration.")
+    try:
+        # Retrieve the vector store from session state
+        vectorstore = st.session_state.vectorstore
+        if vectorstore is None:
+             st.error("🚨 Apologies, the knowledge base failed to load. Please ensure 'scheme_data.json' is present.")
+        else:
+            rag_chain = rag.get_rag_chain(vectorstore, gemini_api_key)
+            
+            # Initialize chat history
+            if "messages" not in st.session_state:
+                st.session_state.messages = []
+            
+            if not st.session_state.messages:
+                 st.session_state.messages.append(
+                     {"role": "assistant", "content": "Knowledge base ready. How can I help you?"}
+                 )
+
+            # Display chat messages
+            for message in st.session_state.messages:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
+
+            # Handle user input
+            if prompt := st.chat_input("Ask about a scheme..."):
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                with st.chat_message("assistant"):
+                    with st.spinner("Searching for the best answer..."):
+                        chat_history_for_chain = [
+                            HumanMessage(content=m["content"]) if m["role"] == "user" 
+                            else AIMessage(content=m["content"]) 
+                            for m in st.session_state.messages[:-1]
+                        ]
+                        
+                        result = rag_chain.invoke({
+                            "input": prompt,
+                            "chat_history": chat_history_for_chain
+                        })
+                        
+                        answer = result.get("answer", "I'm sorry, I couldn't find an answer.")
+                        st.markdown(answer)
+                        
+                        st.session_state.messages.append({"role": "assistant", "content": answer})
+
+    except Exception as e:
+        st.error(f"An error occurred: {e}. Please check if your API key is valid.")

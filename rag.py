@@ -1,175 +1,152 @@
 import os
 import json
-from typing import List, Dict, Any
 from dotenv import load_dotenv
 
-# LangChain core components
-from langchain.docstore.document import Document
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema.output_parser import StrOutputParser
-from langchain.schema.runnable import RunnableParallel, RunnablePassthrough
+from langchain.schema import Document
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain.chains import create_retrieval_chain, create_history_aware_retriever
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.llms.base import LLM
+from pydantic import BaseModel, Field
+from typing import Optional, List, Any
+from langchain.schema import Generation, LLMResult
+import google.generativeai as genai
 
-# Embeddings and Vector Store
-from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint, ChatHuggingFace
+# ---------- SETTINGS ----------
+CHUNK_SIZE = 500
+CHUNK_OVERLAP = 50
+FILE_PATH = "scheme_data.json"
 
-# Google Generative AI
-from langchain_google_genai import ChatGoogleGenerativeAI
-
-# Load .env
 load_dotenv()
 
+# ---------- Gemini LLM Wrapper ----------
+class GeminiLLM(LLM, BaseModel):
+    api_key: str = Field(..., exclude=True)
+    model_name: str = "gemini-1.5-flash-latest"
+    model: Any = None
 
-class GovernmentSchemeRAG:
-    def __init__(self, json_path: str, google_api_key: str, hf_token: str):
-        if not google_api_key and not hf_token:
-            raise ValueError("You must provide either a Google API key or a Hugging Face token.")
+    def __init__(self, **data: Any):
+        super().__init__(**data)
+        genai.configure(api_key=self.api_key)
+        self.model = genai.GenerativeModel(self.model_name)
 
-        self.json_path = json_path
-        self.google_api_key = google_api_key
-        self.hf_token = hf_token
+    @property
+    def _llm_type(self) -> str:
+        return "google-gemini"
 
-        # Embeddings
-        self.embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
+        try:
+            config = {"stop_sequences": stop} if stop else None
+            response = self.model.generate_content(prompt, generation_config=config)
+            return response.text
+        except Exception as e:
+            print(f"Error calling Gemini API: {e}")
+            return "Sorry, something went wrong on my end. Please try again."
 
-        # LLM
-        self.llm = self._initialize_llm()
+    def _generate(self, prompts: List[str], stop: Optional[List[str]] = None) -> LLMResult:
+        generations = []
+        for prompt in prompts:
+            text = self._call(prompt, stop=stop)
+            generations.append([Generation(text=text)])
+        return LLMResult(generations=generations)
 
-        # Load docs
-        print(f"Loading documents from: {self.json_path}")
-        documents = self._load_documents()
-        if not documents:
-            raise ValueError(f"No documents were loaded from {self.json_path}.")
+# ---------- Data Loading & Processing  ----------
+def load_data(file_path, limit=None):
+    try:
+        with open(file_path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        return data[:limit] if limit else data
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"Error loading data from {file_path}: {e}")
+        return []
 
-        # Vector store
-        vector_store = FAISS.from_documents(documents, self.embedding_model)
-        self.retriever = vector_store.as_retriever(search_kwargs={"k": 5})
-        print(f"Vector store created with {len(documents)} documents.")
+#-------  Langchain works good with documents --------
+def prepare_documents(data):
+    docs = []
+    for entry in data:
+        if "data" not in entry: continue
+        d = entry["data"]
+        page_content = (f"Scheme Name: {d.get('scheme_name', 'N/A')}\n"
+                        f"Ministry/Department: {d.get('ministry', 'N/A')} / {d.get('department', 'N/A')}\n"
+                        f"Benefits: {' '.join(d.get('details_content', []))}\n"
+                        f"Eligibility: {' '.join(d.get('eligibility_content', []))}\n"
+                        f"Application Process: {' '.join(d.get('application_process', []))}\n"
+                        f"Tags: {', '.join(d.get('tags', []))}\n")
+        metadata = {"scheme_name": str(d.get('scheme_name', 'Unknown')).lower(),
+                    "ministry": str(d.get('ministry', 'Unknown')).lower(),
+                    "department": str(d.get('department', 'Unknown')).lower()}
+        docs.append(Document(page_content=page_content, metadata=metadata))
+    return docs
 
-        # Prompt
-        self.prompt = self._create_prompt_template()
+# -------- Divide into chunks -----------
+def split_documents(documents, chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP):
 
-        # Chain
-        self.rag_chain_with_sources = self._build_rag_chain()
+    splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+                                              separators=["\n\n", "\n", ". ", ", ", " "], length_function=len)
+    return splitter.split_documents(documents)
 
-    def _initialize_llm(self):
-        """Initialize the LLM for Hugging Face or Google."""
-        if self.google_api_key:
-            print("Initializing model: Gemini 1.5 Flash")
-            os.environ["GOOGLE_API_KEY"] = self.google_api_key
-            return ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3)
+# ---------- KEY-INDEPENDENT RAG COMPONENTS ----------
+def load_and_build_vectorstore(limit: int = 100): 
+    """
+    Loads data, prepares documents, and builds the vector store.
+    This function is slow and does not require an API key.
+    """
+    print(f"Loading data and building vector store with a limit of {limit} documents...")
+    
+    # Use the 'limit' parameter when loading data
+    data = load_data(FILE_PATH, limit=limit) 
+    
+    if not data: return None
+    docs = prepare_documents(data)
+    if not docs: return None
+    chunked_docs = split_documents(docs)
+    
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2", model_kwargs={"device": "cpu"})
+    vectorstore = Chroma.from_documents(documents=chunked_docs, embedding=embeddings)
+    print("Vector store built successfully.")
+    return vectorstore
 
-        if self.hf_token:
-            print("Initializing model: mistralai/Mistral-7B-Instruct-v0.2")
-            endpoint_llm = HuggingFaceEndpoint(
-                repo_id="mistralai/Mistral-7B-Instruct-v0.2",
-                temperature=0.3,
-                max_new_tokens=256,
-                top_p=0.9,
-                huggingfacehub_api_token=self.hf_token
-            )
-            return ChatHuggingFace(llm=endpoint_llm) 
+# ---------- KEY-DEPENDENT RAG COMPONENTS ----------
+def create_llm(api_key: str):
+    """Creates the Gemini LLM instance using the provided API key."""
+    if not api_key:
+        raise ValueError("A valid Gemini API key must be provided.")
+    return GeminiLLM(api_key=api_key)
 
+def get_rag_chain(vectorstore, api_key: str):
+    """
+    Creates the final RAG chain using the pre-built vector store and the user-provided API key.
+    """
+    if not vectorstore or not api_key:
         return None
 
-    def _load_documents(self) -> List[Document]:
-        """Load JSON file into LangChain Document objects."""
-        try:
-            with open(self.json_path, "r", encoding="utf-8") as f:
-                schemes_data = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            print(f"Error reading or parsing JSON file: {e}")
-            return []
+    llm = create_llm(api_key)
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
-        documents = []
-        for scheme in schemes_data:
-            data = scheme.get("data", {})
-            scheme_name = data.get("scheme_name", "Unknown Scheme")
+    contextualize_q_system_prompt = (
+        "Given a chat history and the latest user question which might reference context in the chat history, "
+        "formulate a standalone question which can be understood without the chat history. "
+        "Do NOT answer the question, just reformulate it if needed and otherwise return it as is.")
+    contextualize_q_prompt = ChatPromptTemplate.from_messages([
+        ("system", contextualize_q_system_prompt),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{input}"),
+    ])
+    history_aware_retriever = create_history_aware_retriever(llm, retriever, contextualize_q_prompt)
 
-            content_parts = [
-                f"Scheme: {scheme_name}",
-                f"Ministry: {data.get('ministry', 'N/A')}",
-                f"Department: {data.get('department', 'N/A')}",
-            ]
-            for key in ["details_content", "eligibility_content", "application_process"]:
-                content = data.get(key, [])
-                if isinstance(content, list):
-                    content_parts.extend([str(item) for item in content if item])
-                elif content:
-                    content_parts.append(str(content))
-
-            page_content = "\n".join(content_parts).strip()
-
-            doc = Document(
-                page_content=page_content,
-                metadata={
-                    "scheme_name": scheme_name,
-                    "ministry": data.get("ministry", "N/A"),
-                    "department": data.get("department", "N/A"),
-                    "source": os.path.basename(self.json_path)
-                }
-            )
-            documents.append(doc)
-
-        return documents
-
-    @staticmethod
-    def _create_prompt_template() -> ChatPromptTemplate:
-        """Prompt template with history."""
-        template = """
-You are a friendly and helpful chatbot. Based on the context and chat history below,
-provide a concise and direct answer to the user's question in 2-3 sentences.
-
-Chat History:
-{history}
-
-Context from Documents:
-{context}
-
-User Question:
-{question}
-
-Concise Answer:
-"""
-        return ChatPromptTemplate.from_template(template)
-
-    @staticmethod
-    def _format_docs(docs: List[Document]) -> str:
-        """Format retrieved docs into a single string."""
-        return "\n\n---\n\n".join([d.page_content for d in docs])
-
-    def _build_rag_chain(self):
-        """Build RAG chain with history support."""
-        context_retriever_chain = (
-            (lambda x: x["question"])
-            | self.retriever
-            | self._format_docs
-        )
-
-        rag_chain = (
-            RunnablePassthrough.assign(context=context_retriever_chain)
-            | self.prompt
-            | self.llm
-            | StrOutputParser()
-        )
-
-        chain_with_sources = RunnableParallel(
-            answer=rag_chain,
-            sources=(lambda x: x["question"]) | self.retriever,
-        )
-        return chain_with_sources
-
-    @staticmethod
-    def _post_process_answer(answer: str) -> str:
-        return answer.strip()
-
-    def query(self, question: str, history: str = "") -> Dict[str, Any]:
-        """Query the RAG system."""
-        print(f"Invoking RAG chain for question: '{question}'")
-        if not self.rag_chain_with_sources:
-            return {"answer": "Error: RAG chain is not initialized.", "sources": []}
-
-        input_data = {"question": question, "history": history}
-        result = self.rag_chain_with_sources.invoke(input_data)
-        result["answer"] = self._post_process_answer(result["answer"])
-        return result
+    qa_system_prompt = (
+        "You are an expert assistant for Indian government schemes. Your goal is to provide brief, accurate, and direct answers based on the context below. "
+        "Summarize the key information. Do not add conversational fillers, greetings, or long explanations. "
+        "Get straight to the point. If a specific detail is not in the context, state that it is unavailable.\n\n"
+        "Here is the information I found:\n{context}")
+    qa_prompt = ChatPromptTemplate.from_messages([
+        ("system", qa_system_prompt),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{input}"),
+    ])
+    qa_chain = create_stuff_documents_chain(llm, qa_prompt)
+    
+    return create_retrieval_chain(history_aware_retriever, qa_chain)
