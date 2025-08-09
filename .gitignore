@@ -8,3 +8,6 @@ __pycache__/
 # Virtual environment
 venv/
 *.venv
+
+#rag1
+*.rag1
